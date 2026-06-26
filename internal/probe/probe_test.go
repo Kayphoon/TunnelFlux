@@ -1,6 +1,11 @@
 package probe
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
 
 func TestUniqueTop(t *testing.T) {
 	rows := []Result{
@@ -27,5 +32,45 @@ func TestQUICServerNameUsesCloudflaredEdgeName(t *testing.T) {
 	}
 	if got := quicServerName("custom.example.com"); got != "custom.example.com" {
 		t.Fatalf("custom server name = %q", got)
+	}
+}
+
+func TestProbeIPStopsWhenSampleExceedsBest(t *testing.T) {
+	old := probeQUICFunc
+	defer func() { probeQUICFunc = old }()
+
+	calls := 0
+	probeQUICFunc = func(context.Context, string, int, string, time.Duration) (float64, error) {
+		calls++
+		return 12, nil
+	}
+
+	best := &probeBest{}
+	best.observe(9)
+	got := probeIP(context.Background(), "198.41.1.1", 7844, "quic.cftunnel.com", ModeQUIC, 8, time.Second, best)
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if got.OK != 1 || got.Fail != 7 {
+		t.Fatalf("result = %+v, want one successful early-stopped sample", got)
+	}
+}
+
+func TestProbeIPStopsAfterFirstError(t *testing.T) {
+	old := probeQUICFunc
+	defer func() { probeQUICFunc = old }()
+
+	calls := 0
+	probeQUICFunc = func(context.Context, string, int, string, time.Duration) (float64, error) {
+		calls++
+		return 0, errors.New("timeout")
+	}
+
+	got := probeIP(context.Background(), "198.41.1.1", 7844, "quic.cftunnel.com", ModeQUIC, 8, time.Second, &probeBest{})
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if got.OK != 0 || got.Fail != 8 {
+		t.Fatalf("result = %+v, want failed early-stopped probe", got)
 	}
 }
